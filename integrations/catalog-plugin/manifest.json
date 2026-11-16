@@ -1,0 +1,10 @@
+{
+  "manifest_version": "0.3",
+  "name": "llm-fallbacks-catalog",
+  "display_name": "LLM Fallbacks Catalog",
+  "version": "0.1.0",
+  "description": "Search a bundled offline llm_fallbacks model catalog.",
+  "author": {"name": "ai-llm-experiments"},
+  "server": {"type": "node", "entry_point": "server/index.js", "mcp_config": {"command": "node", "args": ["${__dirname}/server/index.js"]}},
+  "compatibility": {"runtimes": {"node": ">=18.0.0"}}
+}

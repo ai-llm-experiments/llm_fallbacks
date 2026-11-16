@@ -15,6 +15,7 @@ Pick a model. If it fails, try the next one. This library ranks free LLM models 
 - **Daily updates** — JSON and YAML lists refresh every night via GitHub Actions.
 - **Live chat demo** — Try it in your browser at [GitHub Pages](https://bodencrouch.github.io/llm_fallbacks/).
 - **Desktop explorer** — Browse models with `python -m llm_fallbacks`.
+- **Catalog MCP integration** — Search a bundled, offline snapshot from Codex or Claude Desktop. See [installation and limitations](integrations/catalog-plugin/README.md).
 
 ## Install
 
