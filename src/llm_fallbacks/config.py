@@ -13,7 +13,10 @@ if __name__ == "__main__":
 
     sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
-from llm_fallbacks.core import calculate_cost_per_token, get_litellm_models, sort_models_by_cost_and_limits
+from llm_fallbacks.core import get_litellm_models, sort_models_by_cost_and_limits
+
+from llm_fallbacks.pricing import has_explicit_zero_cost
+from llm_fallbacks.provider_catalogs import is_excluded_provider, parse_openai_models
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +270,8 @@ class CustomProviderConfig(BaseProviderConfig):
     free_models: Dict[str, LiteLLMBaseModelSpec] = field(default_factory=dict)
     live_model_keys: set[str] = field(default_factory=set)
     live_fetch_succeeded: bool = False
+    # Keep eager validation for callers that explicitly require a key at load time.
+    validate_api_key_on_init: bool = True
 
     def __post_init__(self):
         self._requested_models: Any = None
@@ -291,10 +296,11 @@ class CustomProviderConfig(BaseProviderConfig):
         else:
             self.api_env_key_name = env_key_name.upper()
 
-        if (not self.api_env_key_name or not self.api_env_key_name.strip()) and self.api_key_required:
+        required_now = self.api_key_required and self.validate_api_key_on_init
+        if (not self.api_env_key_name or not self.api_env_key_name.strip()) and required_now:
             raise ValueError(f"API environment key name for {self.provider_name} is not set.")
         self.api_key = os.getenv(self.api_env_key_name)
-        if (not self.api_key or not self.api_key.strip()) and self.api_key_required:
+        if (not self.api_key or not self.api_key.strip()) and required_now:
             raise ValueError(
                 f"API key for '{self.provider_name}' is not set. Set '{self.api_env_key_name}' in your environment."
             )
@@ -303,13 +309,7 @@ class CustomProviderConfig(BaseProviderConfig):
     def _parse_standard_model_response(
         cls, provider_name: str, requested_models: Dict[str, Any]
     ) -> Dict[str, LiteLLMBaseModelSpec]:
-        data = requested_models.get("data", [])
-        if not isinstance(data, list):
-            return {}
-        parsed_requested_models: Dict[str, LiteLLMBaseModelSpec] = {
-            f"{provider_name}/{model['id']}": {"litellm_provider": provider_name} for model in data
-        }
-        return parsed_requested_models
+        return parse_openai_models(provider_name, requested_models)
 
     def _update_model_specs_with_cost(self, models: Dict[str, LiteLLMBaseModelSpec]):
         for model_name, model_spec in models.items():
@@ -324,14 +324,11 @@ class CustomProviderConfig(BaseProviderConfig):
 
     def _set_free_model_costs(self, models: Dict[str, LiteLLMBaseModelSpec]):
         for model_name, model_spec in models.items():
-            self.model_specs[model_name].setdefault(  # pyright: ignore[reportCallIssue]
-                model_name,  # pyright: ignore[reportArgumentType]
-                model_spec.copy(),  # pyright: ignore[reportArgumentType]
-            ).update(model_spec)
-            if model_name in self.free_models:
-                model_spec.update(self.FREE_COSTS)
-            if calculate_cost_per_token(model_spec) <= 0.0:
-                self.free_models.setdefault(model_name, model_spec.copy()).update(model_spec)
+            self.model_specs[model_name].update(model_spec)
+            if has_explicit_zero_cost(self.model_specs[model_name]):
+                self.free_models[model_name] = self.model_specs[model_name].copy()
+            else:
+                self.free_models.pop(model_name, None)
 
     def _process_requested_models(self, models: Dict[str, LiteLLMBaseModelSpec]):
         parsed_requested_models: Dict[str, LiteLLMBaseModelSpec] = {}
@@ -365,6 +362,13 @@ class CustomProviderConfig(BaseProviderConfig):
             }
 
     def _parse_models(self):
+        if is_excluded_provider(self.provider_name):
+            self.model_specs = {}
+            self.free_models = {}
+            self.live_model_keys = set()
+            self.live_fetch_succeeded = False
+            logger.warning("Provider %s is excluded from active discovery.", self.provider_name)
+            return
         models: Dict[str, LiteLLMBaseModelSpec] = (  # pyright: ignore[reportAssignmentType]
             self.raw_models
             if isinstance(self.raw_models, dict)
@@ -410,74 +414,9 @@ class CustomProviderConfig(BaseProviderConfig):
 def _parse_openrouter_models_response(
     provider_name: str, requested_models: Dict[str, Any]
 ) -> Dict[str, LiteLLMBaseModelSpec]:
-    data = requested_models.get("data", [])
-    if not isinstance(data, list):
-        return {}
-
-    parsed_requested_models: Dict[str, LiteLLMBaseModelSpec] = {}
-    for model in data:
-        model_id = model.get("id", "")
-        if not model_id:
-            continue
-
-        # start with the main provider's template if exists.
-        model_spec: LiteLLMBaseModelSpec = get_litellm_models().get(model_id, {})
-
-        # Parse pricing information
-        pricing = model.get("pricing", {})
-        if pricing:
-            prompt_cost = pricing.get("prompt", 0)
-            if prompt_cost:
-                model_spec["input_cost_per_token"] = float(prompt_cost)
-            completion_cost = pricing.get("completion", 0)
-            if completion_cost:
-                model_spec["output_cost_per_token"] = float(completion_cost)
-            image_cost = pricing.get("image", 0)
-            if image_cost:
-                model_spec["input_cost_per_image"] = float(image_cost)
-            request_cost = pricing.get("request", 0)
-            if request_cost:
-                model_spec["input_cost_per_query"] = float(request_cost)
-
-        # Parse architecture and modality details
-        arch = model.get("architecture", {})
-        top_provider = model.get("top_provider", {})
-        modality = arch.get("modality", "")
-
-        # Context length and max tokens
-        if top_provider:
-            context_length = top_provider.get("context_length")
-            if context_length:
-                model_spec["max_input_tokens"] = int(context_length)
-            max_completion_tokens = top_provider.get("max_completion_tokens")
-            if max_completion_tokens:
-                model_spec["max_output_tokens"] = int(max_completion_tokens)
-
-        # Modality-specific capabilities
-        if modality == "text+image->text":
-            model_spec["mode"] = "chat"
-            model_spec["supports_vision"] = True
-        elif modality == "text->image":
-            model_spec["mode"] = "image_generation"
-        elif modality == "text->embedding":
-            model_spec["mode"] = "embedding"
-        elif modality == "audio->text":
-            model_spec["mode"] = "audio_transcription"
-
-        # Function calling support
-        if arch.get("instruct_type") == "Function":
-            model_spec["supports_function_calling"] = True
-
-        description = model.get("description", "")
-        if description:
-            model_spec["metadata"] = {"notes": description}
-            if "function call" in description.lower():
-                model_spec["supports_function_calling"] = True
-
-        model_spec["litellm_provider"] = provider_name
-        parsed_requested_models[model_id] = model_spec
-
-    return parsed_requested_models
+    parsed = parse_openai_models(provider_name, requested_models, qualify_ids=False)
+    known = get_litellm_models()
+    return {model_id: {**known.get(model_id, {}), **spec} for model_id, spec in parsed.items()}
 
 
 def _normalize_model_identifier(provider_name: str, model_name: str) -> str:
@@ -494,6 +433,8 @@ def _should_include_base_model(
     seen_model_names: set[str],
 ) -> bool:
     provider_name = str(model_spec.get("litellm_provider", "")).casefold()
+    if is_excluded_provider(provider_name, model_name):
+        return False
     canonical_name = _normalize_model_identifier(provider_name, model_name)
 
     if canonical_name in seen_model_names:
@@ -514,13 +455,23 @@ if "CUSTOM_PROVIDERS" not in globals():
             api_key_required=False,
             parse_models_function=_parse_openrouter_models_response,
         ),
+        # Kilo exposes an OpenAI-compatible catalog. Discovery is explicitly
+        # opt-in and its listing does not establish account eligibility.
+        CustomProviderConfig(
+            provider_name="kilo",
+            base_url="https://ai-gateway.kilo.ai/api/v1",
+            api_env_key_name="KILO_API_KEY",
+            api_key_required=False,
+            auto_fetch_models=False,
+            parse_models_function=_parse_openrouter_models_response,
+        ),
         CustomProviderConfig(
             provider_name="openai",
             base_url="https://api.openai.com/v1",
             api_key_required=False,
             auto_fetch_models=False,
         ),
-        # --- Free-tier providers (OpenAI-compatible) ---
+        # Additional providers require account-specific access and pricing evidence.
         CustomProviderConfig(
             provider_name="groq",
             base_url="https://api.groq.com/openai/v1",
@@ -562,7 +513,8 @@ if "CUSTOM_PROVIDERS" not in globals():
             provider_name="together_ai",
             base_url="https://api.together.xyz/v1",
             api_env_key_name="TOGETHER_API_KEY",
-            api_key_required=False,
+            api_key_required=True,
+            validate_api_key_on_init=False,
             auto_fetch_models=False,
         ),
         CustomProviderConfig(
@@ -582,19 +534,13 @@ if "CUSTOM_PROVIDERS" not in globals():
             provider_name="nvidia_nim",
             base_url="https://integrate.api.nvidia.com/v1",
             api_env_key_name="NVIDIA_API_KEY",
-            api_key_required=False,
+            api_key_required=True,
+            validate_api_key_on_init=False,
             auto_fetch_models=False,
         ),
         CustomProviderConfig(
             provider_name="cohere",
             base_url="https://api.cohere.com/v2",
-            api_key_required=False,
-            auto_fetch_models=False,
-        ),
-        CustomProviderConfig(
-            provider_name="github_models",
-            base_url="https://models.inference.ai.azure.com",
-            api_env_key_name="GITHUB_MODELS_TOKEN",
             api_key_required=False,
             auto_fetch_models=False,
         ),
@@ -642,13 +588,6 @@ if "CUSTOM_PROVIDERS" not in globals():
             provider_name="featherless",
             base_url="https://api.featherless.ai/v1",
             api_env_key_name="FEATHERLESS_API_KEY",
-            api_key_required=False,
-            auto_fetch_models=False,
-        ),
-        CustomProviderConfig(
-            provider_name="completions_me",
-            base_url="https://api.completions.me/v1",
-            api_env_key_name="COMPLETIONS_API_KEY",
             api_key_required=False,
             auto_fetch_models=False,
         ),

@@ -68,6 +68,23 @@ Files in `configs/` update daily at midnight UTC. Fetch them from GitHub or gene
 | [`litellm_config.yaml`](configs/litellm_config.yaml) | LiteLLM proxy config (all models) |
 | [`litellm_config_free.yaml`](configs/litellm_config_free.yaml) | LiteLLM proxy config (free models only) |
 
+### OmniRoute proposals
+
+The `llm_fallbacks.omniroute` module turns this catalog into reviewable,
+purpose-named OmniRoute combo proposals. It requires a separate access manifest
+with recent evidence for each exact model and provider: connection, zero-price
+dimensions, cost boundary, endpoint, privacy, and successful requests. Agent
+routes also require verified tool support. The [OmniRoute guide](docs/omniroute.md)
+describes the manifest and command. Keep credentials out of the manifest.
+
+The output is a proposal, not a deployment or a billing guarantee. The catalog's
+ranking measures advertised capabilities; it is not a benchmark or proof of
+access. Start with the empty [access manifest](configs/omniroute-access.example.json);
+it produces no routes until you add verified targets. Confirm runtime permissions,
+current pricing, privacy, and failover before importing a proposal. Long chains are
+bounded by the router's attempt and time limits, and the output reports eligible
+targets beyond the attempt budget.
+
 **Stable raw URLs:**
 
 ```
@@ -210,4 +227,6 @@ MIT — see [LICENSE](LICENSE).
 
 Set `OMNIROUTE_BASE_URL` and optionally `OMNIROUTE_API_KEY` to use the live OmniRoute catalog in existing model filters. Exact gateway IDs and metadata are preserved. A configured gateway error is surfaced so a different catalog cannot silently replace it.
 
-For a Python-only catalog sort, run `python -m llm_fallbacks.omniroute` with those environment variables, or call `get_omniroute_models` and `sort_omniroute_models` directly. This path uses the standard library. It sorts only the listing. OmniRoute owns provider selection, combo targets and failover execution. Entries with unknown prices sort after entries with advertised prices.
+For a Python-only catalog sort, run `python -m llm_fallbacks.omniroute` (or add `--live-catalog`) with those environment variables, or call `get_omniroute_models` and `sort_omniroute_models` directly. This path uses the standard library. It sorts only the listing. OmniRoute owns provider selection, combo targets and failover execution. Entries with unknown prices sort after entries with advertised prices.
+
+The existing `--catalog`, `--access`, `--as-of` and `--output` arguments select the offline proposal mode described above. Importing either adapter remains lazy; the live catalog is fetched only when requested.

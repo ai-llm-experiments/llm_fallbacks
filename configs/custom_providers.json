@@ -8428,7 +8428,7 @@
         "provider_name": "together_ai",
         "base_url": "https://api.together.xyz/v1",
         "api_env_key_name": "TOGETHER_API_KEY",
-        "api_key_required": false,
+        "api_key_required": true,
         "model_specs": {},
         "free_models": {}
     },
@@ -8452,7 +8452,7 @@
         "provider_name": "nvidia_nim",
         "base_url": "https://integrate.api.nvidia.com/v1",
         "api_env_key_name": "NVIDIA_API_KEY",
-        "api_key_required": false,
+        "api_key_required": true,
         "model_specs": {},
         "free_models": {}
     },
@@ -8460,14 +8460,6 @@
         "provider_name": "cohere",
         "base_url": "https://api.cohere.com/v2",
         "api_env_key_name": "COHERE_API_KEY",
-        "api_key_required": false,
-        "model_specs": {},
-        "free_models": {}
-    },
-    {
-        "provider_name": "github_models",
-        "base_url": "https://models.inference.ai.azure.com",
-        "api_env_key_name": "GITHUB_MODELS_TOKEN",
         "api_key_required": false,
         "model_specs": {},
         "free_models": {}
@@ -8524,14 +8516,6 @@
         "provider_name": "featherless",
         "base_url": "https://api.featherless.ai/v1",
         "api_env_key_name": "FEATHERLESS_API_KEY",
-        "api_key_required": false,
-        "model_specs": {},
-        "free_models": {}
-    },
-    {
-        "provider_name": "completions_me",
-        "base_url": "https://api.completions.me/v1",
-        "api_env_key_name": "COMPLETIONS_API_KEY",
         "api_key_required": false,
         "model_specs": {},
         "free_models": {}

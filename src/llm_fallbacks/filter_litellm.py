@@ -32,6 +32,8 @@ from llm_fallbacks.core import (
     sort_models_by_cost_and_limits,
 )
 
+from llm_fallbacks.pricing import has_explicit_zero_cost
+
 # Chat Model Fallbacks
 CHAT_MODEL_PRIORITY_ORDER: list[tuple[str, LiteLLMBaseModelSpec]] = ALL_CHAT_MODELS
 
@@ -165,7 +167,7 @@ def filter_models(
     filtered_models = {}
     for name, spec in models.items():
         # Skip if not free and free_only is True
-        if free_only and spec.get("input_cost_per_token", 0) > 0:
+        if free_only and not has_explicit_zero_cost(spec):
             continue
 
         # Skip if cost per token is too high

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "maxAgeHours": 24,
+  "maxGlobalAttempts": 200,
+  "comboTimeoutMs": 600000,
+  "providerMappings": [],
+  "comboEndpoints": [],
+  "targets": []
+}

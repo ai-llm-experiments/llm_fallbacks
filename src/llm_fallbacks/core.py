@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from llm_fallbacks.config import LiteLLMBaseModelSpec
 
+from llm_fallbacks.pricing import has_explicit_zero_cost
+from llm_fallbacks.provider_catalogs import is_excluded_provider
+
 logger = logging.getLogger(__name__)
 
 PRIORITY_MODEL_ORDER: tuple[str, ...] = ("openrouter/free",)
@@ -96,12 +99,18 @@ def get_litellm_models(*, test_prepend_provider: bool = False) -> dict[str, Lite
         return as_model_specs(get_omniroute_models())
 
     if CACHED_LITELLM_MODELS:
-        return CACHED_LITELLM_MODELS
+        return {
+            name: spec
+            for name, spec in CACHED_LITELLM_MODELS.items()
+            if not is_excluded_provider(spec.get("litellm_provider"), str(name))
+        }
 
     models: dict[str, LiteLLMBaseModelSpec] = {}
     for k, v in _get_litellm_models().items():
         casefold_key = model_key = str(k).casefold()
         if casefold_key == "sample_spec":
+            continue
+        if is_excluded_provider(v.get("litellm_provider"), str(k)):
             continue
 
         if test_prepend_provider:
@@ -243,9 +252,12 @@ def sort_models_by_cost_and_limits(
 
         ranked = sort_omniroute_models(models)
         if free_only:
-            ranked = [(name, spec) for name, spec in ranked if
-                      (spec.get("pricing") or {}).get("prompt") in {0, "0"} and
-                      (spec.get("pricing") or {}).get("completion") in {0, "0"}]
+            ranked = [
+                (name, spec)
+                for name, spec in ranked
+                if (spec.get("pricing") or {}).get("prompt") in {0, "0"}
+                and (spec.get("pricing") or {}).get("completion") in {0, "0"}
+            ]
         return ranked
 
     def _negative_one_to_inf(x: float | int) -> float | int:
@@ -255,21 +267,7 @@ def sort_models_by_cost_and_limits(
     filtered_models: dict[str, LiteLLMBaseModelSpec] = {
         model: spec
         for model, spec in models.items()
-        if not model.startswith("ollama/")
-        and (
-            not free_only
-            or all(
-                spec.get(key, 0) == 0
-                for key in [
-                    "input_cost_per_token",
-                    "output_cost_per_token",
-                    "input_cost_per_character",
-                    "output_cost_per_character",
-                    "input_cost_per_second",
-                    "output_cost_per_second",
-                ]
-            )
-        )
+        if not model.startswith("ollama/") and (not free_only or has_explicit_zero_cost(spec))
     }
 
     # Calculate costs and max tokens

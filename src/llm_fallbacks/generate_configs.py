@@ -18,12 +18,14 @@ Artifacts produced (all written to *output-dir*):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import logging
 import os
 import uuid
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +35,11 @@ if not importlib.util.find_spec("llm_fallbacks"):
     sys.path.append(str(Path(__file__).parents[1]))
 
 from llm_fallbacks.config import ALL_MODELS, CUSTOM_PROVIDERS, FREE_MODELS, CustomProviderConfig, LiteLLMYAMLConfig
-from llm_fallbacks.core import calculate_cost_per_token, get_model_priority_rank
+from llm_fallbacks.core import get_model_priority_rank
 from llm_fallbacks.quality import compute_quality_score
+
+from llm_fallbacks.pricing import has_explicit_zero_cost
+from llm_fallbacks.provider_catalogs import is_excluded_provider
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +72,11 @@ def build_free_models_list(free_models: list[tuple[str, dict[str, Any]]]) -> lis
     """
     entries: list[dict[str, Any]] = []
     for model_id, spec in free_models:
-        if is_local_model(model_id):
+        if (
+            is_local_model(model_id)
+            or is_excluded_provider(spec.get("litellm_provider"), model_id)
+            or not has_explicit_zero_cost(spec)
+        ):
             continue
 
         quality_score, quality_source = compute_quality_score(spec)
@@ -106,10 +115,42 @@ def _is_chat_capable_for_alias(mode: str, model_id: str, deployable_model_names:
     return mode == "" and model_id in deployable_model_names
 
 
+def build_privacy_provenance(
+    free_models: list[tuple[str, dict[str, Any]]],
+    catalog: list[dict[str, Any]],
+    catalog_bytes: bytes,
+    generated_at: str,
+) -> dict[str, Any]:
+    """Keep explicit privacy metadata beside the stable public catalog schema."""
+    source = {}
+    included = {(row["provider"], row["id"]) for row in catalog}
+    for model_id, spec in free_models:
+        identity = (spec.get("litellm_provider", ""), model_id)
+        if identity not in included:
+            continue
+        if identity in source:
+            raise ValueError("Duplicate model identity in privacy provenance")
+        flag = spec.get("may_train_on_prompts")
+        if flag is not None and type(flag) is not bool:
+            raise ValueError("Prompt-training metadata must be boolean or unknown")
+        source[identity] = flag
+    return {
+        "version": 1,
+        "catalogSha256": hashlib.sha256(catalog_bytes).hexdigest(),
+        "generatedAt": generated_at,
+        "models": [
+            {"provider": row["provider"], "id": row["id"], "mayTrainOnPrompts": source[row["provider"], row["id"]]}
+            for row in catalog
+        ],
+    }
+
+
 def build_provider_urls(providers: list[CustomProviderConfig]) -> dict[str, str]:
     """Build a map of provider name to public API base URL (excludes local-only hosts)."""
     urls: dict[str, str] = {}
     for provider in providers:
+        if is_excluded_provider(provider.provider_name):
+            continue
         base = (provider.base_url or "").strip().rstrip("/")
         if not base:
             continue
@@ -315,8 +356,10 @@ def to_litellm_config_yaml(
     free_models_for_alias: list[tuple[str, dict[str, Any]]] = []
 
     for p in providers:
+        if is_excluded_provider(p.provider_name):
+            continue
         for model_name, model_spec in (p.free_models if free_only else p.model_specs).items():
-            is_free = calculate_cost_per_token(model_spec) <= 0.0
+            is_free = has_explicit_zero_cost(model_spec)
             is_local = (
                 model_name.casefold().startswith("ollama/")
                 or model_name.casefold().startswith("vllm/")
@@ -350,6 +393,8 @@ def to_litellm_config_yaml(
             total_fallbacks_found = 0
             total_fallbacks_required = 25
             for k, v in FREE_MODELS:
+                if is_excluded_provider(v.get("litellm_provider"), k):
+                    continue
                 k_name = (
                     k
                     if k.startswith(f"{v.get('litellm_provider')}/") and k not in suitable_fallbacks
@@ -458,7 +503,14 @@ def generate(output_dir: str = "configs", *, deploy_mode: bool = False) -> None:
     free_models_list = build_free_models_list(FREE_MODELS)
     free_models_path = out / "free_models.json"
     logger.info("Writing %s (%d models)", free_models_path, len(free_models_list))
-    free_models_path.write_text(json.dumps(free_models_list, indent=2, ensure_ascii=True))
+    catalog_bytes = json.dumps(free_models_list, indent=2, ensure_ascii=True).encode("utf-8")
+    free_models_path.write_bytes(catalog_bytes)
+    privacy_provenance = build_privacy_provenance(
+        FREE_MODELS, free_models_list, catalog_bytes, datetime.now(timezone.utc).isoformat()
+    )
+    provenance_path = out / "free_models.provenance.json"
+    logger.info("Writing %s", provenance_path)
+    provenance_path.write_text(json.dumps(privacy_provenance, indent=2, ensure_ascii=True) + "\n")
 
     # 5. free_models_ids.txt
     free_ids_path = out / "free_models_ids.txt"
